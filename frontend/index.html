@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>AI Data Entry Enterprise</title>
+<style>
+body{background:#0f172a;color:white;font-family:Arial;margin:0}
+.app{max-width:1100px;margin:auto;padding:30px}
+.card{background:#111827;padding:20px;border-radius:12px;margin-bottom:20px}
+textarea,input{width:100%;padding:10px;border-radius:6px;border:none;margin-top:10px}
+button{padding:10px 15px;border:none;border-radius:6px;margin:5px;cursor:pointer}
+.btn{background:#2563eb;color:white}
+.btn2{background:#16a34a;color:white}
+pre{background:black;padding:15px;border-radius:6px;overflow:auto}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>AI Data Entry – Automated Data Worker</h1>
+
+<div class="card">
+<input type="file" id="fileInput">
+<textarea id="textInput" placeholder="Enter or paste input"></textarea>
+<button class="btn" onclick="analyze()">Analyze</button>
+<button class="btn2" onclick="loadHistory()">Load History</button>
+<button class="btn" onclick="exportExcel()">Export Excel</button>
+</div>
+
+<div class="card">
+<h3>Extracted Data</h3>
+<pre id="result"></pre>
+</div>
+
+<div class="card">
+<h3>Last 10 Analysis</h3>
+<pre id="history"></pre>
+</div>
+</div>
+
+<script>
+const API = "https://YOUR-RENDER-URL.onrender.com";
+
+async function analyze(){
+  const text = document.getElementById('textInput').value;
+  const file = document.getElementById('fileInput').files[0];
+  const form = new FormData();
+  form.append('text', text);
+  if(file) form.append('file', file);
+
+  const res = await fetch(API+"/analyze",{method:"POST",body:form});
+  const data = await res.json();
+  document.getElementById('result').innerText = JSON.stringify(data,null,2);
+}
+
+async function loadHistory(){
+  const res = await fetch(API+"/history");
+  const data = await res.json();
+  document.getElementById('history').innerText = JSON.stringify(data,null,2);
+}
+
+function exportExcel(){
+  window.open(API+"/export");
+}
+</script>
+</body>
+</html>
