@@ -1,19 +1,20 @@
-import os, json, uuid, sqlite3
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import uvicorn
-from PIL import Image
-import pytesseract
-import fitz  # PyMuPDF
+import requests
 import pandas as pd
-import openai
+import sqlite3
+import os
+import json
+from datetime import datetime
 
-# ---------------- CONFIG ----------------
-openai.api_key = os.getenv("OPENAI_API_KEY")
-DB = "history.db"
+# ================= CONFIG =================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Set in Render env
+DB_FILE = "history.db"
+EXPORT_FILE = "export.xlsx"
 
-app = FastAPI()
+# ================= APP =================
+app = FastAPI(title="AI Data Entry Enterprise API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,113 +24,145 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- DB INIT ----------------
+# ================= DATABASE =================
 def init_db():
-    con = sqlite3.connect(DB)
-    cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS history(
-            id TEXT,
-            input TEXT,
-            result TEXT
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_text TEXT,
+            ai_result TEXT,
+            created_at TEXT
         )
     """)
-    con.commit()
-    con.close()
+    conn.commit()
+    conn.close()
 
 init_db()
 
-# ---------------- HELPERS ----------------
-def save_history(raw, result):
-    con = sqlite3.connect(DB)
-    cur = con.cursor()
-    cur.execute("INSERT INTO history VALUES(?,?,?)", (
-        str(uuid.uuid4()), raw, json.dumps(result)
-    ))
-    con.commit()
-    con.close()
+# ================= UTILS =================
+def save_history(raw, ai_result):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO history (raw_text, ai_result, created_at) VALUES (?,?,?)",
+        (raw, json.dumps(ai_result), datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
 
+def call_openai(prompt: str):
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
-def ocr_image(file):
-    img = Image.open(file)
-    return pytesseract.image_to_string(img)
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": "You are an AI data extraction engine. Detect fields, map data, return JSON only."},
+            {"role": "user", "content": prompt}
+        ]
+    }
 
-
-def read_pdf(file):
-    doc = fitz.open(stream=file.read(), filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
+    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
+    data = r.json()
+    text = data["choices"][0]["message"]["content"]
     return text
 
+# ================= API =================
 
-# ---------------- ROUTES ----------------
 @app.get("/")
 def root():
-    return {"status": "AI Data Entry Backend Running"}
-
+    return {"status": "AI Data Entry Enterprise Backend Running"}
 
 @app.post("/analyze")
-async def analyze(text: str = Form(""), file: UploadFile = File(None)):
-    raw_text = text
+async def analyze_data(payload: dict):
+    raw_text = payload.get("text", "")
 
-    if file:
-        if file.filename.lower().endswith(".pdf"):
-            raw_text += read_pdf(file.file)
-        elif file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
-            raw_text += ocr_image(file.file)
-
-    prompt = f"""
-    Extract structured fields from this data.
-    Auto detect fields.
-    Return clean JSON only.
-
-    DATA:
+    ai_prompt = f"""
+    Analyze the following data.
+    Tasks:
+    - Detect fields
+    - Map values
+    - Auto-create fields
+    - Return JSON
+    - Unlimited fields
+    - Include 20 core fields if possible
+    Data:
     {raw_text}
     """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a data extraction AI"},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    result_text = response["choices"][0]["message"]["content"]
+    ai_response = call_openai(ai_prompt)
 
     try:
-        result_json = json.loads(result_text)
+        ai_json = json.loads(ai_response)
     except:
-        result_json = {"raw": result_text}
+        ai_json = {"raw_ai_output": ai_response}
 
-    save_history(raw_text, result_json)
+    save_history(raw_text, ai_json)
 
-    return result_json
-
+    return {
+        "success": True,
+        "data": ai_json
+    }
 
 @app.get("/history")
-def history():
-    con = sqlite3.connect(DB)
-    cur = con.cursor()
-    cur.execute("SELECT * FROM history ORDER BY rowid DESC LIMIT 10")
-    rows = cur.fetchall()
-    con.close()
+def get_history():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT id, raw_text, ai_result, created_at FROM history ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
 
-    return [{"id": r[0], "input": r[1], "result": json.loads(r[2])} for r in rows]
+    result = []
+    for r in rows:
+        result.append({
+            "id": r[0],
+            "raw_text": r[1],
+            "ai_result": json.loads(r[2]),
+            "created_at": r[3]
+        })
 
+    return result
 
 @app.get("/export")
 def export_excel():
-    con = sqlite3.connect(DB)
-    df = pd.read_sql_query("SELECT * FROM history", con)
-    con.close()
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM history", conn)
+    conn.close()
 
-    file = "export.xlsx"
-    df.to_excel(file, index=False)
-    return FileResponse(file, filename="ai_data_export.xlsx")
+    df.to_excel(EXPORT_FILE, index=False)
+    return FileResponse(EXPORT_FILE, filename="ai_data_entry_export.xlsx")
 
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    content = await file.read()
+    text = content.decode(errors="ignore")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    ai_prompt = f"""
+    Extract structured data from this document text.
+    Detect fields, auto-map values, return JSON.
+    Text:
+    {text}
+    """
+
+    ai_response = call_openai(ai_prompt)
+
+    try:
+        ai_json = json.loads(ai_response)
+    except:
+        ai_json = {"raw_ai_output": ai_response}
+
+    save_history(text, ai_json)
+
+    return {"success": True, "data": ai_json}
+
+# ===== Cloud OCR Placeholder (Production Safe) =====
+@app.post("/ocr")
+async def cloud_ocr_stub():
+    return {
+        "status": "OCR not enabled",
+        "message": "Cloud OCR will be integrated (Google Vision / Azure / AWS Textract)"
+    }
