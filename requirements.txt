@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-openai
-pytesseract
-pillow
-pymupdf
-pandas
-python-multipart
