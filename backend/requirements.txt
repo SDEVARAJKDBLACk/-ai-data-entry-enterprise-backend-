@@ -1,9 +1,13 @@
 fastapi
 uvicorn
 python-multipart
-pandas
+pytesseract
 Pillow
 pdfplumber
 python-docx
+pandas
 openpyxl
-pytesseract
+opencv-python
+spacy
+scikit-learn
+numpy
