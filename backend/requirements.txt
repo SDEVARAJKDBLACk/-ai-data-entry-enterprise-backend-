@@ -1,25 +1,13 @@
 fastapi
 uvicorn
 python-multipart
-pydantic
 pandas
 openpyxl
 numpy
-
-# OCR + AI
-pytesseract
 Pillow
+pytesseract
+pdfplumber
+python-docx
 opencv-python-headless
-
-# NLP
 spacy
 scikit-learn
-
-# PDF / DOC / TEXT
-PyPDF2
-python-docx
-pdfplumber
-
-# Utils
-python-dotenv
-requests
