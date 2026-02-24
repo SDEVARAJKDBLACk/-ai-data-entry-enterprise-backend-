@@ -1,166 +1,209 @@
-import re, io, json, os
+    import os, re, io, json
+from datetime import datetime
+from typing import Dict, Any, List
+
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from datetime import datetime
+from fastapi.responses import FileResponse, JSONResponse
+
 import pandas as pd
 from PIL import Image
-import pytesseract
 import pdfplumber
 from docx import Document
-import spacy
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.naive_bayes import MultinomialNB
-import joblib
 
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-HISTORY=[]
-MODEL_PATH="ai_model.pkl"
-MEMORY_PATH="field_memory.json"
-
-# ---------- NLP ----------
+# ================= OCR SAFE IMPORT =================
 try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    nlp = spacy.blank("en")
+    import pytesseract
+    OCR_AVAILABLE = True
+except Exception as e:
+    OCR_AVAILABLE = False
+    print("OCR disabled:", e)
 
-# ---------- MEMORY ----------
+# ================= APP =================
+app = FastAPI(title="AI Data Entry Enterprise Engine", version="1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================= STORAGE =================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MEMORY_PATH = os.path.join(BASE_DIR, "field_memory.json")
+HISTORY_PATH = os.path.join(BASE_DIR, "history.json")
+EXPORT_PATH = os.path.join(BASE_DIR, "export.xlsx")
+
 if not os.path.exists(MEMORY_PATH):
-    with open(MEMORY_PATH,"w") as f:
-        json.dump({},f)
+    with open(MEMORY_PATH, "w") as f:
+        json.dump({}, f)
 
+if not os.path.exists(HISTORY_PATH):
+    with open(HISTORY_PATH, "w") as f:
+        json.dump([], f)
+
+# ================= UTILS =================
 def load_memory():
-    with open(MEMORY_PATH,"r") as f:
+    with open(MEMORY_PATH, "r") as f:
         return json.load(f)
 
 def save_memory(mem):
-    with open(MEMORY_PATH,"w") as f:
-        json.dump(mem,f,indent=2)
+    with open(MEMORY_PATH, "w") as f:
+        json.dump(mem, f, indent=2)
 
-# ---------- FILE READERS ----------
-def read_pdf(file):
-    text=""
-    with pdfplumber.open(io.BytesIO(file)) as pdf:
+def load_history():
+    with open(HISTORY_PATH, "r") as f:
+        return json.load(f)
+
+def save_history(hist):
+    with open(HISTORY_PATH, "w") as f:
+        json.dump(hist, f, indent=2)
+
+# ================= FILE EXTRACTION =================
+def extract_text_from_pdf(file_bytes):
+    text = ""
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for p in pdf.pages:
             if p.extract_text():
-                text+=p.extract_text()+"\n"
+                text += p.extract_text() + "\n"
     return text
 
-def read_docx(file):
-    doc=Document(io.BytesIO(file))
+def extract_text_from_docx(file_bytes):
+    doc = Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
 
-def read_image(file):
-    img=Image.open(io.BytesIO(file))
+def extract_text_from_image(file_bytes):
+    if not OCR_AVAILABLE:
+        return ""
+    img = Image.open(io.BytesIO(file_bytes))
     return pytesseract.image_to_string(img)
 
-# ---------- CORE AI ENGINE ----------
-def ai_engine(text):
-    memory=load_memory()
-    data={}
-
-    doc=nlp(text)
-
-    # NLP ENTITY EXTRACTION
-    for ent in doc.ents:
-        label=ent.label_
-        val=ent.text.strip()
-        if label not in data:
-            data[label]=[]
-        data[label].append(val)
-
-    # PATTERN LEARNING
-    patterns={
-        "Phone":r"\b[6-9]\d{9}\b",
-        "Email":r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
-        "Amount":r"\b\d{3,}\b",
-        "Age":r"\b(\d{1,3})\s*years?\s*old\b"
+# ================= OFFLINE NLP ENGINE =================
+def regex_extract(text: str) -> Dict[str, List[str]]:
+    patterns = {
+        "name": r"(?:my name is|i am|name is)\s+([A-Z][a-z]+)",
+        "reference_name": r"(?:reference name is)\s+([A-Z][a-z]+\s[A-Z][a-z]+)",
+        "age": r"(\d{1,3})\s*(?:years old|yrs old|age)",
+        "gender": r"\b(male|female|other)\b",
+        "phone": r"\b\d{10}\b",
+        "email": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        "amount": r"\b\d{3,}\b",
+        "city": r"\b(chennai|bangalore|mumbai|delhi|hyderabad)\b",
+        "state": r"\b(tamil nadu|kerala|karnataka|maharashtra)\b",
+        "country": r"\b(india|usa|uk|canada)\b",
+        "address": r"\b\d{1,4},\s.*?(street|road|nagar)\b"
     }
 
-    for field,pat in patterns.items():
-        found=re.findall(pat,text,re.IGNORECASE)
-        if found:
-            data.setdefault(field,[]).extend(found)
+    extracted = {}
+    lower = text.lower()
 
-    # UNLIMITED FIELD DETECTION (AUTO SCHEMA)
-    lines=text.split("\n")
-    for l in lines:
-        if ":" in l:
-            k,v=l.split(":",1)
-            key=k.strip().title()
-            val=v.strip()
-            if key and val:
-                data.setdefault(key,[]).append(val)
+    for field, pattern in patterns.items():
+        matches = re.findall(pattern, lower, re.IGNORECASE)
+        if matches:
+            extracted[field] = list(set(matches))
 
-    # FIELD AUTO LEARNING
-    for k,v in data.items():
-        if k not in memory:
-            memory[k]={"patterns":[],"count":0}
-        memory[k]["count"]+=len(v)
-        for val in v:
-            memory[k]["patterns"].append(val)
+    return extracted
+
+# ================= AI FIELD ENGINE =================
+def ai_field_engine(text: str) -> Dict[str, Any]:
+    memory = load_memory()
+    extracted = regex_extract(text)
+
+    # ---------- MEMORY LEARNING ----------
+    for field, values in extracted.items():
+        if field not in memory:
+            memory[field] = []
+        for v in values:
+            if v not in memory[field]:
+                memory[field].append(v)
 
     save_memory(memory)
-    return data
 
-# ---------- API ----------
+    # ---------- STRUCTURED MAPPING ----------
+    structured = {}
+    for k, v in extracted.items():
+        structured[k.replace("_", " ").title()] = ", ".join(v)
+
+    return structured
+
+# ================= API =================
+
 @app.post("/analyze")
-async def analyze(text: str = Form(None), file: UploadFile = File(None)):
-    content=""
+async def analyze(
+    text: str = Form(None),
+    file: UploadFile = File(None)
+):
+    content = ""
 
     if file:
-        raw=await file.read()
-        name=file.filename.lower()
-        if name.endswith(".pdf"):
-            content=read_pdf(raw)
-        elif name.endswith(".docx"):
-            content=read_docx(raw)
-        elif name.endswith((".png",".jpg",".jpeg")):
-            content=read_image(raw)
+        data = await file.read()
+        fname = file.filename.lower()
+
+        if fname.endswith(".pdf"):
+            content = extract_text_from_pdf(data)
+        elif fname.endswith(".docx"):
+            content = extract_text_from_docx(data)
+        elif fname.endswith((".png", ".jpg", ".jpeg")):
+            content = extract_text_from_image(data)
         else:
-            content=raw.decode(errors="ignore")
-    else:
-        content=text
+            content = data.decode(errors="ignore")
 
-    extracted=ai_engine(content)
+    if text:
+        content += "\n" + text
 
-    rec={
-        "time":datetime.now().isoformat(),
-        "input":content,
-        "data":extracted
+    if not content.strip():
+        return JSONResponse({"error": "No input data"}, status_code=400)
+
+    fields = ai_field_engine(content)
+
+    history = load_history()
+    history.append({
+        "time": datetime.now().isoformat(),
+        "input": content[:300],
+        "fields": fields
+    })
+    save_history(history[-50:])  # last 50 only
+
+    return {
+        "status": "success",
+        "fields": fields
     }
-    HISTORY.append(rec)
-    if len(HISTORY)>20:
-        HISTORY.pop(0)
-
-    return {"status":"success","data":extracted}
 
 @app.get("/history")
-def history():
-    return HISTORY[::-1]
+def get_history():
+    return load_history()[-10:]
 
 @app.post("/custom-field")
-async def custom_field(field: str = Form(...), value: str = Form(...)):
-    if not HISTORY:
-        return {"status":"error","msg":"No session"}
-    HISTORY[-1]["data"].setdefault(field,[]).append(value)
-    return {"status":"success","data":HISTORY[-1]["data"]}
+def add_custom_field(field: str = Form(...), value: str = Form(...)):
+    memory = load_memory()
+    if field not in memory:
+        memory[field] = []
+    memory[field].append(value)
+    save_memory(memory)
+    return {"status": "added"}
 
 @app.get("/export")
 def export_excel():
-    if not HISTORY:
-        return {"status":"error","msg":"No data"}
-    latest=HISTORY[-1]["data"]
-    rows=[]
-    for k,v in latest.items():
-        rows.append({"Field":k,"Value":", ".join(v)})
-    df=pd.DataFrame(rows)
-    path="export.xlsx"
-    df.to_excel(path,index=False)
-    return FileResponse(path,filename="ai_export.xlsx")
+    history = load_history()
+    rows = []
 
-if __name__=="__main__":
-    import uvicorn
-    uvicorn.run("main:app",host="0.0.0.0",port=8000)
+    for h in history:
+        for k, v in h["fields"].items():
+            rows.append({
+                "time": h["time"],
+                "field": k,
+                "value": v
+            })
+
+    if not rows:
+        return JSONResponse({"error": "No data"}, status_code=400)
+
+    df = pd.DataFrame(rows)
+    df.to_excel(EXPORT_PATH, index=False)
+
+    return FileResponse(EXPORT_PATH, filename="ai_data_export.xlsx")
+
+@app.get("/")
+def root():
+    return {"status": "AI Data Entry Enterprise Engine Running"}
