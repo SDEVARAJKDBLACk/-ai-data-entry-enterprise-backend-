@@ -1,109 +1,203 @@
+# ============================
+# AI DATA ENTRY ENTERPRISE
+# FULL REAL FILE AI VERSION
+# Single-file Fullstack System
+# ============================
+
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn, re, json, io
-from typing import List
-from PIL import Image
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+import uvicorn, io, re, json, os
 import pytesseract
-from docx import Document
+from PIL import Image
 import pdfplumber
+import docx
+import pandas as pd
+from datetime import datetime
 
-app = FastAPI(title="AI Data Entry Enterprise System")
+# ---------------------------
+# AI MEMORY (FIELD LEARNING)
+# ---------------------------
+MEMORY_FILE = "field_memory.json"
+if not os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE,"w") as f:
+        json.dump({},f)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def load_memory():
+    with open(MEMORY_FILE,"r") as f:
+        return json.load(f)
 
-# ---------------- AI NLP ENGINE ---------------- #
+def save_memory(data):
+    with open(MEMORY_FILE,"w") as f:
+        json.dump(data,f,indent=4)
 
-NAME_REGEX = r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\b"
-PHONE_REGEX = r"\b[6-9]\d{9}\b"
-EMAIL_REGEX = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-DATE_REGEX = r"\b\d{2}/\d{2}/\d{4}\b"
-AMOUNT_REGEX = r"\b\d{3,7}\b"
+# ---------------------------
+# APP INIT
+# ---------------------------
+app = FastAPI()
 
-def ai_extract(text: str):
-    names = list(set(re.findall(NAME_REGEX, text)))
-    phones = re.findall(PHONE_REGEX, text)
-    emails = re.findall(EMAIL_REGEX, text)
-    dates = re.findall(DATE_REGEX, text)
-    amounts = re.findall(AMOUNT_REGEX, text)
+# ---------------------------
+# OCR / FILE PARSERS
+# ---------------------------
+def extract_from_image(file_bytes):
+    img = Image.open(io.BytesIO(file_bytes))
+    text = pytesseract.image_to_string(img)
+    return text
 
-    products = []
-    if "laptop" in text.lower():
-        products.append("Laptop")
-    if "mobile" in text.lower():
-        products.append("Mobile Phone")
+def extract_from_pdf(file_bytes):
+    text = ""
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    return text
 
-    address_fields = {}
-    if "street" in text.lower(): address_fields["street"] = "Detected"
-    if "nagar" in text.lower(): address_fields["area"] = "Detected"
-    if "chennai" in text.lower(): address_fields["city"] = "Chennai"
-    if "tamil nadu" in text.lower(): address_fields["state"] = "Tamil Nadu"
-    if "india" in text.lower(): address_fields["country"] = "India"
+def extract_from_docx(file_bytes):
+    doc = docx.Document(io.BytesIO(file_bytes))
+    text = ""
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    return text
 
-    structured = {
-        "persons": names,
-        "phones": phones,
-        "emails": emails,
-        "dates": dates,
-        "amounts": amounts,
-        "products": products,
-        "address": address_fields
+def extract_from_txt(file_bytes):
+    return file_bytes.decode(errors="ignore")
+
+# ---------------------------
+# AI EXTRACTION ENGINE
+# ---------------------------
+def ai_extract(text):
+    memory = load_memory()
+
+    result = {
+        "Persons": [],
+        "PersonalDetails": {},
+        "Address": {},
+        "Financial": {},
+        "Products": [],
+        "Dates": {},
+        "Transaction": {},
+        "Notes": []
     }
 
-    return structured
+    # ---------- HUMAN NAME FILTER ----------
+    name_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)+', text)
+    for n in name_candidates:
+        if not any(x in n.lower() for x in ["road","street","office","company","technologies","city","state","country"]):
+            if n not in result["Persons"]:
+                result["Persons"].append(n)
 
-# ---------------- FILE PROCESSING ---------------- #
+    # ---------- AGE ----------
+    ages = re.findall(r'(\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*) is (\d{1,3}) years', text)
+    for name, age in ages:
+        result["PersonalDetails"].setdefault(name,{})["Age"]=age
 
-def extract_text_from_file(file: UploadFile):
-    content = ""
-    if file.filename.endswith(".txt"):
-        content = file.file.read().decode()
+    # ---------- GENDER ----------
+    if "male" in text.lower():
+        for p in result["Persons"]:
+            if "Gender" not in result["PersonalDetails"].get(p,{}):
+                if p.lower() in text.lower():
+                    result["PersonalDetails"].setdefault(p,{})["Gender"]="Male"
 
-    elif file.filename.endswith(".pdf"):
-        with pdfplumber.open(io.BytesIO(file.file.read())) as pdf:
-            for page in pdf.pages:
-                content += page.extract_text() or ""
+    # ---------- PHONE ----------
+    phones = re.findall(r'\b\d{10}\b', text)
+    if phones:
+        result["Financial"]["Phones"]=phones
 
-    elif file.filename.endswith(".docx"):
-        doc = Document(io.BytesIO(file.file.read()))
-        for para in doc.paragraphs:
-            content += para.text + "\n"
+    # ---------- EMAIL ----------
+    emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    if emails:
+        result["Financial"]["Emails"]=emails
 
-    elif file.filename.endswith((".png",".jpg",".jpeg")):
-        image = Image.open(io.BytesIO(file.file.read()))
-        content = pytesseract.image_to_string(image)
+    # ---------- ADDRESS ----------
+    if "street" in text.lower():
+        result["Address"]["Raw"]=re.findall(r'\d+.*,.*', text)
 
-    return content
+    # ---------- SALARY & AMOUNT ----------
+    salaries = re.findall(r'salary is (\d+)', text.lower())
+    if salaries:
+        result["Financial"]["Salaries"]=salaries
 
-# ---------------- API ---------------- #
+    amounts = re.findall(r'amount paid.*?(\d+)', text.lower())
+    if amounts:
+        result["Financial"]["TotalAmount"]=amounts
 
+    # ---------- PRODUCTS ----------
+    products = re.findall(r'Product name is ([A-Za-z ]+).*?Quantity is (\d+).*?Price is (\d+)', text, re.S)
+    for p in products:
+        result["Products"].append({
+            "Name":p[0].strip(),
+            "Quantity":p[1],
+            "Price":p[2]
+        })
+
+    # ---------- DATES ----------
+    dates = re.findall(r'\b\d{2}/\d{2}/\d{4}\b', text)
+    if dates:
+        if len(dates)>=1: result["Dates"]["Meeting"]=dates[0]
+        if len(dates)>=2: result["Dates"]["FollowUp"]=dates[1]
+
+    # ---------- TRANSACTION ----------
+    txn = re.findall(r'TXN\d+', text)
+    if txn:
+        result["Transaction"]["Reference"]=txn[0]
+
+    if "cash" in text.lower():
+        result["Transaction"]["Mode"]="Cash"
+
+    # ---------- NOTES ----------
+    lines = text.split("\n")
+    for l in lines:
+        if "discussed" in l.lower() or "handled" in l.lower() or "managed" in l.lower():
+            result["Notes"].append(l.strip())
+
+    # ---------- FIELD LEARNING ----------
+    for k in result:
+        memory[k]=memory.get(k,0)+1
+    save_memory(memory)
+
+    return result
+
+# ---------------------------
+# API ROUTES
+# ---------------------------
 @app.post("/analyze")
-async def analyze(text: str = Form(None), file: UploadFile = File(None)):
-    raw_text = ""
-
-    if text:
-        raw_text += text
+async def analyze(file:UploadFile=None, text:str=Form(default="")):
+    content = ""
 
     if file:
-        raw_text += "\n" + extract_text_from_file(file)
+        data = await file.read()
+        fname = file.filename.lower()
 
-    result = ai_extract(raw_text)
+        if fname.endswith((".png",".jpg",".jpeg")):
+            content = extract_from_image(data)
+        elif fname.endswith(".pdf"):
+            content = extract_from_pdf(data)
+        elif fname.endswith(".docx"):
+            content = extract_from_docx(data)
+        elif fname.endswith(".txt"):
+            content = extract_from_txt(data)
+        else:
+            content = data.decode(errors="ignore")
 
-    return JSONResponse({
-        "raw_text": raw_text,
-        "extracted": result
-    })
+    if text:
+        content += "\n"+text
 
-# ---------------- UI ---------------- #
+    ai_data = ai_extract(content)
+    return JSONResponse(ai_data)
 
+@app.post("/export")
+async def export(data:dict):
+    rows=[]
+    for k,v in data.items():
+        rows.append({"Field":k,"Value":json.dumps(v,ensure_ascii=False)})
+    df=pd.DataFrame(rows)
+    file="export.xlsx"
+    df.to_excel(file,index=False)
+    return FileResponse(file,filename=file)
+
+# ---------------------------
+# FULLSTACK UI
+# ---------------------------
 @app.get("/", response_class=HTMLResponse)
-def ui():
+def home():
     return """
 <!DOCTYPE html>
 <html>
@@ -112,62 +206,84 @@ def ui():
 <style>
 body{font-family:Arial;background:#f4f6f9;margin:0;padding:0}
 .container{max-width:1200px;margin:auto;padding:20px}
-h1{text-align:center}
-.box{background:#fff;padding:15px;border-radius:8px;margin-bottom:15px}
-textarea{width:100%;height:150px}
-button{padding:10px 20px;background:#4CAF50;color:#fff;border:none;border-radius:5px;cursor:pointer}
-table{width:100%;border-collapse:collapse;margin-top:10px}
-th,td{border:1px solid #ddd;padding:8px;text-align:left}
-th{background:#eee}
+.card{background:#fff;padding:20px;border-radius:10px;box-shadow:0 0 10px #ccc}
+button{padding:10px 15px;border:none;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer}
+table{width:100%;border-collapse:collapse;margin-top:20px}
+th,td{border:1px solid #ddd;padding:8px}
+th{background:#f1f5f9}
+input,textarea{width:100%;padding:10px;margin:5px 0}
 </style>
 </head>
 <body>
 <div class="container">
-<h1>AI Data Entry Web Application</h1>
+<div class="card">
+<h2>AI Data Entry Enterprise</h2>
 
-<div class="box">
-<h3>Input Data</h3>
-<textarea id="text"></textarea><br><br>
-<input type="file" id="file"><br><br>
+<input type="file" id="file">
+<textarea id="text" placeholder="Paste text, message, notes..."></textarea>
+
 <button onclick="analyze()">Analyze</button>
-</div>
+<button onclick="clearData()">Clear</button>
+<button onclick="exportExcel()">Export Excel</button>
 
-<div class="box">
-<h3>Extracted Structured Data</h3>
-<pre id="json"></pre>
-</div>
+<h3>Extracted Data</h3>
+<div id="output"></div>
 
-<div class="box">
-<h3>Table View</h3>
-<table id="table"></table>
 </div>
-
 </div>
 
 <script>
-async function analyze(){
-    const fd = new FormData();
-    fd.append("text",document.getElementById("text").value);
-    const file=document.getElementById("file").files[0];
-    if(file) fd.append("file",file);
+let lastData=null;
 
-    const res = await fetch("/analyze",{method:"POST",body:fd});
-    const data = await res.json();
+function analyze(){
+    let f=document.getElementById("file").files[0];
+    let t=document.getElementById("text").value;
+    let fd=new FormData();
+    if(f)fd.append("file",f);
+    fd.append("text",t);
 
-    document.getElementById("json").innerText = JSON.stringify(data.extracted,null,2);
+    fetch("/analyze",{method:"POST",body:fd})
+    .then(r=>r.json())
+    .then(d=>{
+        lastData=d;
+        render(d);
+    });
+}
 
-    let table = "<tr><th>Field</th><th>Values</th></tr>";
-    for(let key in data.extracted){
-        table += `<tr><td>${key}</td><td>${JSON.stringify(data.extracted[key])}</td></tr>`;
+function render(d){
+    let html="<table><tr><th>Field</th><th>Value</th></tr>";
+    for(let k in d){
+        html+=`<tr><td>${k}</td><td><pre>${JSON.stringify(d[k],null,2)}</pre></td></tr>`;
     }
-    document.getElementById("table").innerHTML = table;
+    html+="</table>";
+    document.getElementById("output").innerHTML=html;
+}
+
+function exportExcel(){
+    if(!lastData){alert("No data");return;}
+    fetch("/export",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify(lastData)})
+    .then(r=>r.blob())
+    .then(b=>{
+        let a=document.createElement("a");
+        a.href=URL.createObjectURL(b);
+        a.download="export.xlsx";
+        a.click();
+    });
+}
+
+function clearData(){
+    document.getElementById("file").value="";
+    document.getElementById("text").value="";
+    document.getElementById("output").innerHTML="";
+    lastData=null;
 }
 </script>
 </body>
 </html>
 """
 
-# ---------------- RUN ---------------- #
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# ---------------------------
+# RUN
+# ---------------------------
+if __name__=="__main__":
+    uvicorn.run(app,host="0.0.0.0",port=8000)
