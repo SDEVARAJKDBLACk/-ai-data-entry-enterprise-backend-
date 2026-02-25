@@ -291,5 +291,5 @@ const a=document.createElement("a"); a.href=u; a.download="extracted.xlsx"; a.cl
 </html>
 """
 
-# ---------------- RUN ----------------
-# uvicorn main:app --host 0.0.0.0 --port 10000
+---------------- RUN ----------------
+uvicorn main:app --host 0.0.0.0 --port 10000
