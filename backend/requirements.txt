@@ -1,13 +1,1 @@
-fastapi
-uvicorn
-python-multipart
-pytesseract
-Pillow
-pdfplumber
-python-docx
-pandas
-openpyxl
-opencv-python
-spacy
-scikit-learn
-numpy
+fastapi, uvicorn, google-generativeai, python-multipart, pillow, pdfplumber, python-docx, pandas, openpyxl.
