@@ -1,1 +1,9 @@
-fastapi, uvicorn, google-generativeai, python-multipart, pillow, pdfplumber, python-docx, pandas, openpyxl.
+fastapi
+uvicorn
+google-generativeai
+python-multipart
+pillow
+pdfplumber
+python-docx
+pandas
+openpyxl
