@@ -1,4 +1,4 @@
-   import os, io, re, json, uvicorn
+import os, io, re, json, uvicorn
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from PIL import Image
