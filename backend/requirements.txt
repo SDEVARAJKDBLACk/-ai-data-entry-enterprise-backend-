@@ -5,5 +5,5 @@ google-generativeai
 pandas
 openpyxl
 pillow
-PyPDF2
+pypdf2
 python-docx
