@@ -10,8 +10,8 @@ app = FastAPI()
 # 1. API KEY SETUP
 API_KEY = os.getenv("GEMINI_API_KEY")
 
-# 2. STABLE URL (v1beta-vai thookittu v1 nu maathittaen)
-# Idhu dhaan 404 error-ai fix pannum
+# 2. STABLE V1 URL (v1beta mothamaa thookiyaachu)
+# Idhu dhaan direct stable production endpoint
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={API_KEY}"
 
 @app.get("/", response_class=HTMLResponse)
@@ -20,39 +20,47 @@ async def home():
     <!DOCTYPE html>
     <html lang="en">
     <head>
+        <meta charset="UTF-8">
         <title>AI Data Entry - Automated Data Worker</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body class="bg-slate-900 text-white p-10 font-sans">
-        <div class="max-w-2xl mx-auto text-center">
-            <h1 class="text-4xl font-extrabold mb-4 text-blue-400">AI Data Entry - Automated Data Worker</h1>
-            <p class="mb-8 text-slate-400 font-medium italic">Gemini 1.5 Flash (Stable v1) Powered Extraction</p>
+    <body class="bg-slate-900 text-white p-6 md:p-12 font-sans">
+        <div class="max-w-3xl mx-auto">
+            <header class="text-center mb-10">
+                <h1 class="text-4xl font-black text-blue-500 tracking-tight">AI DATA ENTRY</h1>
+                <p class="text-slate-400 uppercase text-xs tracking-[0.2em] mt-2 font-bold">Automated Data Worker v1.0 (Stable)</p>
+            </header>
             
-            <textarea id="rawInput" class="w-full h-44 bg-slate-800 border border-slate-700 p-4 rounded-2xl mb-4 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-inner" 
-            placeholder="Ex: Ramesh, age 25, from Salem working as Teacher..."></textarea>
-            
-            <button onclick="processData()" id="btn" class="w-full bg-blue-600 hover:bg-blue-700 py-4 rounded-xl font-bold text-lg transition shadow-lg active:scale-95">
-                Start Automation
-            </button>
-            
-            <div id="loader" class="hidden mt-6 text-blue-400 animate-pulse font-semibold">⚡ AI Worker is analyzing your data...</div>
+            <div class="bg-slate-800 border border-slate-700 p-6 rounded-3xl shadow-2xl">
+                <label class="block text-sm font-bold text-slate-400 mb-2 uppercase tracking-wide">Paste Raw Data</label>
+                <textarea id="rawInput" class="w-full h-40 bg-slate-900 border border-slate-700 p-4 rounded-2xl mb-4 focus:ring-2 focus:ring-blue-500 outline-none text-slate-200" 
+                placeholder="Example: Senthil, 34 years old, lives in Madurai, works as a Driver..."></textarea>
+                
+                <button onclick="processData()" id="btn" class="w-full bg-blue-600 hover:bg-blue-700 py-4 rounded-2xl font-black text-lg transition-all transform active:scale-95 shadow-lg shadow-blue-900/20">
+                    EXTRACT DATA
+                </button>
+            </div>
 
-            <div class="mt-10 grid grid-cols-2 gap-6 text-left bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
-                <div class="space-y-1">
-                    <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Full Name</label>
-                    <input id="name" class="w-full bg-slate-900 border border-slate-700 p-3 rounded-lg text-blue-300 font-semibold" readonly>
+            <div id="loader" class="hidden mt-6 text-center text-blue-400 font-bold animate-pulse">
+                ⚙️ SYSTEM ANALYZING DATA...
+            </div>
+
+            <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
+                    <label class="text-[10px] text-slate-500 font-black uppercase">Full Name</label>
+                    <input id="name" class="w-full bg-transparent p-1 text-blue-400 font-bold text-lg outline-none" readonly>
                 </div>
-                <div class="space-y-1">
-                    <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Age</label>
-                    <input id="age" class="w-full bg-slate-900 border border-slate-700 p-3 rounded-lg text-blue-300 font-semibold" readonly>
+                <div class="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
+                    <label class="text-[10px] text-slate-500 font-black uppercase">Age</label>
+                    <input id="age" class="w-full bg-transparent p-1 text-blue-400 font-bold text-lg outline-none" readonly>
                 </div>
-                <div class="space-y-1">
-                    <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Location</label>
-                    <input id="loc" class="w-full bg-slate-900 border border-slate-700 p-3 rounded-lg text-blue-300 font-semibold" readonly>
+                <div class="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
+                    <label class="text-[10px] text-slate-500 font-black uppercase">Location</label>
+                    <input id="loc" class="w-full bg-transparent p-1 text-blue-400 font-bold text-lg outline-none" readonly>
                 </div>
-                <div class="space-y-1">
-                    <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Job Role</label>
-                    <input id="job" class="w-full bg-slate-900 border border-slate-700 p-3 rounded-lg text-blue-300 font-semibold" readonly>
+                <div class="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
+                    <label class="text-[10px] text-slate-500 font-black uppercase">Occupation</label>
+                    <input id="job" class="w-full bg-transparent p-1 text-blue-400 font-bold text-lg outline-none" readonly>
                 </div>
             </div>
         </div>
@@ -62,10 +70,9 @@ async def home():
                 const btn = document.getElementById('btn');
                 const loader = document.getElementById('loader');
                 const text = document.getElementById('rawInput').value;
-                if(!text) return alert("Please enter some text!");
+                if(!text) return;
 
-                btn.disabled = true; 
-                btn.classList.add('opacity-50');
+                btn.disabled = true; btn.innerText = "WORKING...";
                 loader.classList.remove('hidden');
 
                 const fd = new FormData();
@@ -81,13 +88,12 @@ async def home():
                         document.getElementById('loc').value = result.info.location || '-';
                         document.getElementById('job').value = result.info.job || '-';
                     } else {
-                        alert("AI Error: " + result.error);
+                        alert("ERROR: " + result.error);
                     }
                 } catch(e) {
-                    alert("Network Error: Could not connect to the backend.");
+                    alert("CONNECTION FAILED");
                 } finally {
-                    btn.disabled = false;
-                    btn.classList.remove('opacity-50');
+                    btn.disabled = false; btn.innerText = "EXTRACT DATA";
                     loader.classList.add('hidden');
                 }
             }
@@ -98,30 +104,30 @@ async def home():
 
 @app.post("/extract")
 async def extract(data: str = Form(...)):
-    # Precise instruction for JSON format
-    prompt = f"Extract Name, Age, Location, and Job Role from this text: '{data}'. Return ONLY a JSON object with keys: name, age, location, job. If any info is missing, use an empty string."
+    # AI response-ai JSON-aa mattum thara solli strict prompt
+    prompt = f"Extract Name, Age, Location, and Job from: '{data}'. Return ONLY JSON format: {{'name': '', 'age': '', 'location': '', 'job': ''}}"
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
     }
     
     try:
-        # v1 (Stable) API request
-        resp = requests.post(GEMINI_URL, json=payload, timeout=10)
+        # Direct Stable v1 Request
+        resp = requests.post(GEMINI_URL, json=payload, timeout=15)
         resp_json = resp.json()
 
         if resp.status_code != 200:
-            error_msg = resp_json.get('error', {}).get('message', 'API Error')
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": f"Status {resp.status_code}: Check API Key."}
 
         ai_text = resp_json['candidates'][0]['content']['parts'][0]['text']
         
-        # Regex to find JSON block in AI response
+        # Regex to filter JSON from AI text
         match = re.search(r'\{.*\}', ai_text, re.DOTALL)
         if match:
-            extracted_json = json.loads(match.group())
+            extracted_json = json.loads(match.group().replace("'", '"'))
             return {"success": True, "info": extracted_json}
         
-        return {"success": False, "error": "AI response was not in JSON format."}
+        return {"success": False, "error": "AI could not structure data."}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Server busy. Try again."}
+    
