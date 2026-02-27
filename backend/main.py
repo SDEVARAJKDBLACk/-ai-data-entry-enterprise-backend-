@@ -1,15 +1,17 @@
 import os
+import json
+import re
 import google.generativeai as genai
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# API Key check
+# --- 1. API CONFIGURATION ---
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 if API_KEY:
+    # Latest stable configuration to avoid 404
     genai.configure(api_key=API_KEY)
-    # 404 varaama irukka 'gemini-1.5-flash' use pannuvom
     model = genai.GenerativeModel('gemini-1.5-flash')
 else:
     model = None
@@ -23,59 +25,133 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <html>
-    <head>
-        <title>AI Chatbot</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:20px; }
-            #chatbox { background:#1e293b; padding:15px; border-radius:12px; max-width:500px; margin:auto; height:400px; overflow-y:auto; text-align:left; border:1px solid #334155; }
-            .input-area { max-width:500px; margin:20px auto; display:flex; gap:10px; }
-            input { flex:1; padding:12px; border-radius:8px; border:none; outline:none; color:black; }
-            button { padding:12px 24px; background:#3b82f6; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; }
-        </style>
-    </head>
-    <body>
-        <h2>🤖 Gemini AI Chatbot</h2>
-        <div id="chatbox"><p style="color:#64748b;">System Ready. Type a message...</p></div>
-        <div class="input-area">
-            <input type="text" id="userInput" placeholder="Say Hi...">
-            <button onclick="send()">SEND</button>
-        </div>
-        <script>
-            async function send() {
-                const input = document.getElementById('userInput');
-                const chat = document.getElementById('chatbox');
-                const msg = input.value;
-                if(!msg) return;
-                chat.innerHTML += `<div><b>You:</b> ${msg}</div>`;
-                input.value = "";
-                try {
-                    const formData = new FormData();
-                    formData.append('message', msg);
-                    const response = await fetch('/chat', { method: 'POST', body: formData });
-                    const data = await response.json();
-                    chat.innerHTML += `<div style="color:#60a5fa;"><b>AI:</b> ${data.reply}</div>`;
-                } catch(e) {
-                    chat.innerHTML += `<p style="color:red;">Error: Server Busy.</p>`;
-                }
-                chat.scrollTop = chat.scrollHeight;
-            }
-        </script>
-    </body>
-    </html>
-    """
+# --- 2. FRONTEND (HTML/JS) ---
+HTML_CONTENT = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Data Entry - Automated Data Worker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); }
+        .success-glow { box-shadow: 0 0 15px rgba(34, 197, 94, 0.5); }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+    <div class="container mx-auto px-4 py-10">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
+                AI Data Entry - Automated Data Worker
+            </h1>
+            <p class="text-slate-400 mt-2">Paste raw text and let the AI fill the database for you.</p>
+        </header>
 
-@app.post("/chat")
-async def chat(message: str = Form(...)):
+        <div class="grid lg:grid-cols-2 gap-8 max-w-6xl mx-auto">
+            
+            <div class="glass p-6 rounded-2xl border border-slate-700">
+                <h2 class="text-xl font-semibold mb-4 flex items-center gap-2 text-blue-400">
+                    <span>⚡</span> Raw Data Input
+                </h2>
+                <textarea id="rawInput" placeholder="Paste data here... (e.g., Ramesh from Chennai, age 28, working as an Engineer)" 
+                    class="w-full h-48 bg-slate-800 border border-slate-600 rounded-xl p-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition"></textarea>
+                <button onclick="processData()" id="processBtn"
+                    class="w-full mt-4 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl font-bold transition flex justify-center items-center gap-2">
+                    Start Automation
+                </button>
+            </div>
+
+            <div class="glass p-6 rounded-2xl border border-slate-700">
+                <h2 class="text-xl font-semibold mb-4 flex items-center gap-2 text-emerald-400">
+                    <span>📋</span> Automated Output
+                </h2>
+                <div id="status" class="hidden mb-4 p-2 text-center text-xs bg-emerald-500/20 text-emerald-400 rounded-lg">
+                    Data Extracted Successfully!
+                </div>
+                <form id="dataForm" class="space-y-4">
+                    <div>
+                        <label class="text-xs text-slate-400 uppercase tracking-widest">Full Name</label>
+                        <input type="text" id="name" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg p-3">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-xs text-slate-400 uppercase tracking-widest">Age</label>
+                            <input type="text" id="age" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg p-3">
+                        </div>
+                        <div>
+                            <label class="text-xs text-slate-400 uppercase tracking-widest">Location</label>
+                            <input type="text" id="location" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg p-3">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 uppercase tracking-widest">Job Role</label>
+                        <input type="text" id="job" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg p-3">
+                    </div>
+                </form>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        async function processData() {
+            const btn = document.getElementById('processBtn');
+            const rawText = document.getElementById('rawInput').value;
+            if(!rawText) return alert("Please paste some text first!");
+
+            btn.disabled = true;
+            btn.innerText = "Extracting...";
+
+            try {
+                const formData = new FormData();
+                formData.append('text', rawText);
+
+                const response = await fetch('/automate', { method: 'POST', body: formData });
+                const result = await response.json();
+
+                if(result.success) {
+                    document.getElementById('name').value = result.data.name || '';
+                    document.getElementById('age').value = result.data.age || '';
+                    document.getElementById('location').value = result.data.location || '';
+                    document.getElementById('job').value = result.data.job || '';
+                    
+                    document.getElementById('status').classList.remove('hidden');
+                    setTimeout(() => document.getElementById('status').classList.add('hidden'), 3000);
+                }
+            } catch (err) {
+                alert("Automation failed. Check logs.");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Start Automation";
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return HTML_CONTENT
+
+@app.post("/automate")
+async def automate_worker(text: str = Form(...)):
     if not model:
-        return {"reply": "API Key not configured."}
+        return {"success": False, "error": "AI Config Missing"}
+    
+    # Precise prompt for Data Worker
+    prompt = (
+        f"Extract information from the text: '{text}'. "
+        "Return ONLY a JSON object with keys: name, age, location, job. "
+        "If a value is missing, use an empty string. "
+    )
+
     try:
-        response = model.generate_content(message)
-        return {"reply": response.text}
+        response = model.generate_content(prompt)
+        # Cleaning the AI response to get valid JSON
+        json_str = re.search(r'\{.*\}', response.text, re.DOTALL).group()
+        extracted_data = json.loads(json_str)
+        return {"success": True, "data": extracted_data}
     except Exception as e:
-        return {"reply": f"Gemini Error: {str(e)}"}
-        
+        return {"success": False, "error": str(e)}
