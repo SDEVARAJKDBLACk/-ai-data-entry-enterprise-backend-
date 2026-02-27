@@ -1,216 +1,61 @@
-import os, io, json, re, uuid
+import os, io, re, json, uvicorn
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
+from fastapi.responses import HTMLResponse
 from PIL import Image
-import PyPDF2
-import docx
-import pandas as pd
+import google.generativeai as genai
 
-# ================= CONFIG =================
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+# API Key - Render Environment-il irundhu edukkirom (Safe Method)
+API_KEY = os.getenv("GEMINI_API_KEY")
 
-text_model = genai.GenerativeModel("gemini-1.5-flash")
-vision_model = genai.GenerativeModel("gemini-1.5-flash")
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    model = None
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-DATA_STORE = {}
-LAST_ANALYSIS = {}
-
-# ================= UTILS =================
-
-def extract_text_from_file(file: UploadFile, content: bytes):
-    name = file.filename.lower()
-    if name.endswith(".pdf"):
-        reader = PyPDF2.PdfReader(io.BytesIO(content))
-        return "\n".join([p.extract_text() or "" for p in reader.pages])
-    elif name.endswith(".docx"):
-        d = docx.Document(io.BytesIO(content))
-        return "\n".join([p.text for p in d.paragraphs])
-    elif name.endswith((".txt", ".md")):
-        return content.decode(errors="ignore")
-    elif name.endswith((".png", ".jpg", ".jpeg", ".webp")):
-        img = Image.open(io.BytesIO(content))
-        return img
-    else:
-        return content.decode(errors="ignore")
-
-def gemini_analyze(text: str):
-    prompt = f"""
-You are an AI data extraction engine.
-Extract structured data in JSON format only.
-
-Rules:
-- Persons: human names only
-- Separate phone and alternate phone
-- Amount field: salary, amount, price only
-- Multiple values allowed per field
-- Strict JSON
-
-Text:
-{text}
-"""
-    res = text_model.generate_content(prompt)
-    raw = res.text.strip()
-    raw = re.sub(r"```json|```", "", raw)
-    return json.loads(raw)
-
-def gemini_image_analyze(image: Image.Image):
-    prompt = """
-Extract all meaningful structured data from this image.
-Return only JSON.
-"""
-    res = vision_model.generate_content([prompt, image])
-    raw = res.text.strip()
-    raw = re.sub(r"```json|```", "", raw)
-    return json.loads(raw)
-
-# ================= UI =================
+@app.post("/analyze")
+async def analyze(file: UploadFile = None, text: str = Form(default="")):
+    if not model:
+        return {"Error": "API Key not found in Render Environment Variables!"}
+    try:
+        prompt = "Extract Name, Phone, Email, Amount as JSON. Return ONLY JSON."
+        if file and file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            img = Image.open(io.BytesIO(await file.read()))
+            response = model.generate_content([prompt, img])
+        else:
+            response = model.generate_content(f"{prompt}\nInput: {text}")
+        
+        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        return json.loads(json_match.group()) if json_match else {"Error": "AI format error"}
+    except Exception as e:
+        return {"Error": str(e)}
 
 @app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>AI Data Entry Enterprise</title>
-<style>
-body{font-family:Arial;background:#0f172a;color:#fff;margin:0;padding:0}
-.container{max-width:1200px;margin:auto;padding:20px}
-textarea{width:100%;height:160px}
-button{padding:10px 20px;margin:5px;border:0;border-radius:6px;cursor:pointer}
-.card{background:#111827;padding:15px;border-radius:10px;margin-top:15px}
-table{width:100%;border-collapse:collapse}
-td,th{border:1px solid #334155;padding:8px}
-input{padding:6px}
-</style>
-</head>
-<body>
-<div class="container">
-<h2>AI Data Entry Web Application (Gemini AI)</h2>
-
-<textarea id="text"></textarea><br>
-<input type="file" id="file"><br><br>
-
-<button onclick="analyze()">Analyze</button>
-<button onclick="exportExcel()">Export Excel</button>
-<button onclick="clearAll()">Clear</button>
-
-<div class="card">
-<h3>Custom Field</h3>
-<input id="cf_name" placeholder="Field">
-<input id="cf_value" placeholder="Value">
-<button onclick="addField()">Add</button>
-</div>
-
-<div class="card">
-<h3>Extracted Data</h3>
-<div id="result"></div>
-</div>
-</div>
-
-<script>
-let extracted = {}
-
-function render(data){
- let html="<table><tr><th>Field</th><th>Value</th></tr>";
- for(let k in data){
-   html+=`<tr><td>${k}</td><td>${JSON.stringify(data[k])}</td></tr>`;
- }
- html+="</table>";
- document.getElementById("result").innerHTML=html;
-}
-
-async function analyze(){
- let text=document.getElementById("text").value;
- let file=document.getElementById("file").files[0];
- let fd=new FormData();
- if(text) fd.append("text",text);
- if(file) fd.append("file",file);
-
- let r=await fetch("/analyze",{method:"POST",body:fd});
- let j=await r.json();
- extracted=j.data;
- render(extracted);
-}
-
-async function exportExcel(){
- let r=await fetch("/export");
- let blob=await r.blob();
- let a=document.createElement("a");
- a.href=URL.createObjectURL(blob);
- a.download="extracted.xlsx";
- a.click();
-}
-
-function clearAll(){
- extracted={}
- document.getElementById("text").value="";
- document.getElementById("file").value="";
- document.getElementById("result").innerHTML="";
-}
-
-function addField(){
- let f=document.getElementById("cf_name").value;
- let v=document.getElementById("cf_value").value;
- if(!extracted[f]) extracted[f]=[];
- extracted[f].push(v);
- render(extracted);
-}
-</script>
-</body>
-</html>
-"""
-
-# ================= API =================
-
-@app.post("/analyze")
-async def analyze(text: str = Form(None), file: UploadFile = File(None)):
-    content_text = ""
-
-    if file:
-        raw = await file.read()
-        extracted = extract_text_from_file(file, raw)
-        if isinstance(extracted, Image.Image):
-            data = gemini_image_analyze(extracted)
-        else:
-            content_text += extracted
-
-    if text:
-        content_text += "\n" + text
-
-    data = gemini_analyze(content_text)
-    global LAST_ANALYSIS
-    LAST_ANALYSIS = data
-    return {"status":"ok","data":data}
-
-@app.get("/export")
-async def export_excel():
-    if not LAST_ANALYSIS:
-        return JSONResponse({"error":"No data"})
-    rows=[]
-    for k,v in LAST_ANALYSIS.items():
-        if isinstance(v,list):
-            for i in v:
-                rows.append({"Field":k,"Value":i})
-        else:
-            rows.append({"Field":k,"Value":v})
-    df=pd.DataFrame(rows)
-    file="export.xlsx"
-    df.to_excel(file,index=False)
-    return FileResponse(file,filename="extracted.xlsx")
-
-# ================= RUN =================
-# uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+def home():
+    status = "✅ Connected" if model else "❌ API Key Missing in Render"
+    return f"""
+    <html><body style="background:#0f172a; color:white; padding:50px; font-family:sans-serif; text-align:center;">
+        <div style="max-width:500px; margin:auto; background:#1e293b; padding:30px; border-radius:20px; border:1px solid #334155;">
+            <h2 style="color:#3b82f6 text-transform:uppercase;">AI Data Analyzer</h2>
+            <p style="font-size:12px; color:#94a3b8;">Status: {status}</p>
+            <textarea id="t" style="width:100%; height:100px; background:#020617; color:white; border-radius:10px; padding:10px; margin:15px 0; border:1px solid #334155;"></textarea>
+            <button onclick="run()" id="btn" style="width:100%; padding:15px; background:#2563eb; color:white; border:none; border-radius:12px; font-weight:bold; cursor:pointer;">Start Analysis</button>
+            <div id="res" style="margin-top:20px; text-align:left; background:#020617; padding:15px; border-radius:10px; font-size:13px;"></div>
+        </div>
+        <script>
+            async function run() {{
+                const b = document.getElementById('btn'); b.innerText = "Analyzing...";
+                const fd = new FormData();
+                fd.append('text', document.getElementById('t').value);
+                try {{
+                    const res = await fetch('/analyze', {{method:'POST', body:fd}});
+                    const data = await res.json();
+                    document.getElementById('res').innerHTML = data.Error ? `<span style="color:red">${{data.Error}}</span>` : `<pre style="color:#93c5fd">${{JSON.stringify(data, null, 2)}}</pre>`;
+                }} catch(e) {{ alert("Check Render Logs"); }}
+                finally {{ b.innerText = "Start Analysis"; }}
+            }}
+        </script>
+    </body></html>
+    """
