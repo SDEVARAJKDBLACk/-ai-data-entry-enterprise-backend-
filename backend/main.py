@@ -1,17 +1,18 @@
 import os
+import google.generativeai as genai
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from google import genai
 
-# 1. API Setup using NEW SDK
+# API Key check
 API_KEY = os.getenv("GEMINI_API_KEY")
-client = None
 
 if API_KEY:
-    client = genai.Client(api_key=API_KEY)
+    genai.configure(api_key=API_KEY)
+    # 404 varaama irukka 'gemini-1.5-flash' use pannuvom
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
-    print("Error: GEMINI_API_KEY not found!")
+    model = None
 
 app = FastAPI()
 
@@ -27,7 +28,7 @@ async def home():
     return """
     <html>
     <head>
-        <title>AI Chatbot - Modern SDK</title>
+        <title>AI Chatbot</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
             body { background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:20px; }
@@ -38,10 +39,10 @@ async def home():
         </style>
     </head>
     <body>
-        <h2>🤖 Gemini Modern Chatbot</h2>
-        <div id="chatbox"><p style="color:#64748b;">AI: System Online. How can I help?</p></div>
+        <h2>🤖 Gemini AI Chatbot</h2>
+        <div id="chatbox"><p style="color:#64748b;">System Ready. Type a message...</p></div>
         <div class="input-area">
-            <input type="text" id="userInput" placeholder="Ask something...">
+            <input type="text" id="userInput" placeholder="Say Hi...">
             <button onclick="send()">SEND</button>
         </div>
         <script>
@@ -59,7 +60,7 @@ async def home():
                     const data = await response.json();
                     chat.innerHTML += `<div style="color:#60a5fa;"><b>AI:</b> ${data.reply}</div>`;
                 } catch(e) {
-                    chat.innerHTML += `<p style="color:red;">Error: Connection lost.</p>`;
+                    chat.innerHTML += `<p style="color:red;">Error: Server Busy.</p>`;
                 }
                 chat.scrollTop = chat.scrollHeight;
             }
@@ -70,15 +71,11 @@ async def home():
 
 @app.post("/chat")
 async def chat(message: str = Form(...)):
-    if not client:
-        return {"reply": "API Key Error"}
+    if not model:
+        return {"reply": "API Key not configured."}
     try:
-        # Using the new SDK syntax
-        response = client.models.generate_content(
-            model="gemini-1.5-flash", 
-            contents=message
-        )
+        response = model.generate_content(message)
         return {"reply": response.text}
     except Exception as e:
         return {"reply": f"Gemini Error: {str(e)}"}
-    
+        
