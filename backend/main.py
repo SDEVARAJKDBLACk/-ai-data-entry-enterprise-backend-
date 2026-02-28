@@ -1,56 +1,127 @@
-import os
-import requests
+import streamlit as st
+import openai
+import PyPDF2
+import docx
+from PIL import Image
+import pytesseract
+import io
 import json
-import re
-from flask import Flask, render_template, request, jsonify
+import pandas as pd
 
-app = Flask(__name__)
+# --- Page Config & UI Injection ---
+st.set_page_config(page_title="AI Data Entry - Automated Data Worker", layout="centered")
 
-# 1. Gemini API Setup (Stable v1 - Direct URL)
-# Friend code-la iruntha 'genai.GenerativeModel' thukiyaachu, athan error varala
-API_KEY = "AIzaSyA4_LXv5St-1-u-xidvVWBakivc_HaetkE" # Unga key
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={API_KEY}"
-
-@app.route('/')
-def index():
-    # Inga unga HTML file name kudunga
-    return render_template('index.html')
-
-@app.route('/extract', methods=['POST'])
-def extract_data():
-    raw_text = request.form.get('data')
-    if not raw_text:
-        return jsonify({"success": False, "error": "No data provided"})
-
-    # Prompt-ai 'app.py' maadhiri structure pandrom
-    prompt = f"Extract Name, Age, Location, and Job from this text: '{raw_text}'. Return ONLY a JSON object with keys: name, age, location, job."
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
+# Screenshot-la irukkira athe Dark UI design-ai CSS moolama kondu varom
+st.markdown("""
+    <style>
+    /* Main Background */
+    .stApp {
+        background-color: #0b0e14;
+        color: #e2e8f0;
     }
+    /* Card/Container Style */
+    div.stBlock {
+        background-color: #161b22;
+        padding: 20px;
+        border-radius: 12px;
+        margin-bottom: 15px;
+    }
+    /* Input Boxes */
+    textarea, input {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border-radius: 8px !important;
+    }
+    /* Buttons */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        border: none;
+    }
+    .analyze-btn { background-color: #00bcd4 !important; color: white !important; } /* Cyan */
+    .clear-btn { background-color: #3f51b5 !important; color: white !important; }   /* Blue/Purple */
+    .export-btn { background-color: #673ab7 !important; color: white !important; }  /* Deep Purple */
+    
+    /* Headers */
+    h1, h2, h3 { color: #ffffff !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    try:
-        # Direct request to Google (No v1beta error)
-        response = requests.post(GEMINI_URL, json=payload, timeout=15)
-        res_json = response.json()
+# --- Session States ---
+if 'history' not in st.session_state:
+    st.session_state.history = []
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
 
-        if response.status_code != 200:
-            return jsonify({"success": False, "error": res_json.get('error', {}).get('message', 'API Error')})
+# --- App Logic ---
+def extract_text(file):
+    fname = file.name.lower()
+    if fname.endswith('.pdf'):
+        return "".join([p.extract_text() for p in PyPDF2.PdfReader(file).pages])
+    elif fname.endswith('.docx'):
+        return "\n".join([p.text for p in docx.Document(file).paragraphs])
+    elif fname.endswith(('.png', '.jpg', '.jpeg')):
+        return pytesseract.image_to_string(Image.open(file))
+    else:
+        return file.read().decode('utf-8')
 
-        ai_text = res_json['candidates'][0]['content']['parts'][0]['text']
+# --- Login Phase ---
+if not st.session_state.logged_in:
+    st.title("🔐 Login")
+    user = st.text_input("Username")
+    pw = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if user == "admin" and pw == "admin123":
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Invalid Login")
+else:
+    # --- UI Layout Starts ---
+    st.title("AI Data Entry – Automated Data Worker")
+
+    # Section 1: Upload & Input
+    with st.container():
+        st.markdown("### 📂 Upload text / notes / message / PDF / Word")
+        uploaded_file = st.file_uploader("Choose file", type=['pdf', 'docx', 'png', 'jpg', 'jpeg', 'txt'], label_visibility="collapsed")
         
-        # Regex to filter JSON (Friend code-la illatha extra safety)
-        match = re.search(r'\{.*\}', ai_text, re.DOTALL)
-        if match:
-            extracted_data = json.loads(match.group().replace("'", '"'))
-            return jsonify({"success": True, "info": extracted_data})
+        st.markdown("### Enter or paste input")
+        user_input = st.text_area("", height=200, label_visibility="collapsed")
         
-        return jsonify({"success": False, "error": "AI could not structure data"})
+        col1, col2, col3, _ = st.columns([1, 1, 1.5, 4])
+        analyze = col1.button("Analyze")
+        clear = col2.button("Clear")
+        export = col3.button("Export Excel")
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
+    # Section 2: Extracted Data
+    st.markdown("---")
+    st.markdown("### Extracted Data:")
+    col_f, col_v = st.columns(2)
+    col_f.write("**Field**")
+    col_v.write("**Values**")
+    
+    # Placeholder for Results
+    if analyze:
+        # Inga unga OpenAI logic-ai add pannalam
+        st.info("Analyzing data... (Connect your OpenAI Key to see results)")
 
-if __name__ == "__main__":
-    # Render-kku port 10000 mukkiyam
-    app.run(host='0.0.0.0', port=10000)
+    # Section 3: Custom Fields
+    st.markdown("---")
+    st.markdown("### ➕ Custom Fields")
+    c1, c2, c3 = st.columns([2, 2, 1])
+    c1.text_input("Field name", placeholder="e.g. GST Number", label_visibility="collapsed")
+    c2.text_input("Value", placeholder="e.g. 22AAAAA0000A1Z5", label_visibility="collapsed")
+    c3.button("Add")
+
+    # Section 4: History
+    st.markdown("---")
+    st.markdown("### 🕒 Last 10 Analysis")
+    if st.session_state.history:
+        st.table(st.session_state.history)
+    else:
+        st.write("No recent analysis found.")
+
+    if st.sidebar.button("Logout"):
+        st.session_state.logged_in = False
+        st.rerun()
         
