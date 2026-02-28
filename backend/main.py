@@ -1,101 +1,143 @@
 import streamlit as st
-import openai
-import PyPDF2
-import docx
-from PIL import Image
-import pytesseract
-import io
-import json
+import re
+import spacy
 import pandas as pd
+import io
 import os
 from datetime import datetime
 
-# --- Page Config & UI ---
-st.set_page_config(page_title="AI Data Entry Pro", layout="centered")
+# --- NLP Model Loading ---
+@st.cache_resource
+def load_nlp():
+    try:
+        return spacy.load("en_core_web_sm")
+    except:
+        return None
 
-# Custom CSS for Dark UI (As per your screenshot)
+nlp = load_nlp()
+
+# --- Page Configuration & Dark UI ---
+st.set_page_config(page_title="AI Data Entry Pro", layout="wide")
+
+# Exact UI Design from your requirements
 st.markdown("""
     <style>
     .stApp { background-color: #0b0e14; color: #e2e8f0; }
-    div.stBlock { background-color: #161b22; padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #30363d; }
-    textarea, input { background-color: #ffffff !important; color: #000000 !important; border-radius: 8px !important; }
-    .stButton>button { border-radius: 8px; font-weight: 600; width: 100%; height: 45px; }
-    div[data-testid="stHorizontalBlock"] > div:nth-child(1) button { background-color: #00bcd4 !important; color: white; } 
-    div[data-testid="stHorizontalBlock"] > div:nth-child(2) button { background-color: #3f51b5 !important; color: white; }
-    div[data-testid="stHorizontalBlock"] > div:nth-child(3) button { background-color: #673ab7 !important; color: white; }
+    div.stBlock { background-color: #161b22; padding: 25px; border-radius: 15px; border: 1px solid #30363d; margin-bottom: 20px; }
+    textarea, input { background-color: #ffffff !important; color: #000000 !important; border-radius: 8px !important; font-size: 16px !important; }
+    .stButton>button { border-radius: 8px; font-weight: 600; width: 100%; height: 50px; transition: 0.3s; }
+    
+    /* Button Colors */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(1) button { background-color: #00bcd4 !important; color: white; border: none; } 
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) button { background-color: #3f51b5 !important; color: white; border: none; }
+    div[data-testid="stHorizontalBlock"] > div:nth-child(3) button { background-color: #673ab7 !important; color: white; border: none; }
+    
+    .extracted-box { background-color: #1c2128; padding: 15px; border-radius: 10px; border-left: 5px solid #00bcd4; margin-bottom: 10px; }
+    h1, h2, h3 { color: #ffffff !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# Session state initialize
+# Initialize Session States
 if 'history' not in st.session_state: st.session_state.history = []
-if 'extracted_data' not in st.session_state: st.session_state.extracted_data = None
+if 'extracted_results' not in st.session_state: st.session_state.extracted_results = {}
 
-# --- Functions ---
-def ai_process(text, fields_list):
-    # API Key check (Render Environment Variable or Sidebar)
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return {"Error": "OpenAI API Key Missing! Render Settings-la add pannunga."}
+# --- 30+ Regex Patterns ---
+PATTERNS = {
+    "Aadhar_Card": r'\b\d{4}\s\d{4}\s\d{4}\b',
+    "PAN_Card": r'\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b',
+    "GST_No": r'\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b',
+    "Phone_Number": r'\b(?:\+91|91|0)?[6-9]\d{9}\b',
+    "Email_Address": r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b',
+    "Pincode": r'\b\d{6}\b',
+    "Amount_INR": r'(?:Rs\.?|INR|₹)\s?(\d+(?:,\d+)*(?:\.\d+)?)',
+    "Date_DDMMYYYY": r'\b\d{2}[/-]\d{2}[/-]\d{4}\b',
+    "OTP_Code": r'\b\d{4,6}\b(?=.*otp|.*code|.*verification|.*sent)',
+    "UPI_ID": r'\b[\w.-]+@[a-zA-Z]{3,}\b',
+    "Credit_Card": r'\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b',
+    "IFSC_Code": r'\b[A-Z]{4}0[A-Z0-9]{6}\b',
+    "Bank_Acc_No": r'\b\d{9,18}\b(?=.*account|.*acc|.*bank)',
+    "Voter_ID": r'\b[A-Z]{3}[0-9]{7}\b',
+    "Passport_No": r'\b[A-Z]{1}[0-9]{7}\b',
+    "Vehicle_No": r'\b[A-Z]{2}\s?[0-9]{2}\s?[A-Z]{1,2}\s?[0-9]{4}\b',
+    "Age": r'\b\d{1,3}\s?(years?|yrs?|age)\b',
+    "Quantity": r'\b\d+\s?(pcs|units|nos|items|quantity)\b',
+    "Password": r'(?i)password[:\s]+(\S+)',
+    "Time": r'\b(?:[01]\d|2[0-3]):[0-5]\d\b',
+    "Weight": r'\b\d+(\.\d+)?\s?(kg|gram|g|mg)\b',
+    "Distance": r'\b\d+(\.\d+)?\s?(km|m|cm|miles)\b',
+    "URL": r'https?://[^\s]+',
+    "IP_Address": r'\b(?:\d{1,3}\.){3}\d{1,3}\b',
+    "Designation": r'(?i)(?:as|is a|works as)\s+([a-zA-Z\s]{3,25})(?=\.|\s+at)',
+    "Salary": r'(?i)(?:salary|income|pay)\s?(?:is)?[:\s₹]+(\d+)',
+    "Reference_No": r'(?i)(?:ref|reference|txn)\s?(?:no|id)?[:\s#]+([A-Z0-9]+)',
+    "Company": r'(?i)(?:in|at)\s+([a-zA-Z0-9\s]{3,30})\s+(?:company|office|corp)',
+    "Gender": r'\b(Male|Female|Other|m/f)\b',
+    "Price": r'(?i)(?:price|cost|rate)\s?(?:is)?[:\s₹$]+(\d+)'
+}
+
+def deep_analyze(text):
+    found = {}
+    # 1. Regex Match
+    for key, pattern in PATTERNS.items():
+        matches = re.findall(pattern, text)
+        if matches:
+            val = matches if len(matches) > 1 else matches[0]
+            found[key] = val[0] if isinstance(val, tuple) else val
+
+    # 2. NLP Entities (Names & Locations)
+    if nlp:
+        doc = nlp(text)
+        names = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
+        locs = [ent.text for ent in doc.ents if ent.label_ in ["GPE", "LOC"]]
+        if names: found["Detected_Names"] = list(set(names))
+        if locs: found["Detected_Locations"] = list(set(locs))
     
-    openai.api_key = api_key
-    prompt = f"""
-    Extract the following fields from the text: {fields_list}.
-    Text: {text}
-    Return the result ONLY as a JSON object.
-    """
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o", # Best for extraction
-            messages=[{"role": "system", "content": "You are a professional data entry assistant."},
-                      {"role": "user", "content": prompt}],
-            response_format={ "type": "json_object" }
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        return {"Error": str(e)}
+    return found
 
 # --- UI Layout ---
 st.title("AI Data Entry – Automated Data Worker")
 
 with st.container():
-    st.markdown("### 📂 Upload file or Paste Input")
+    st.markdown("### 📂 Upload text / notes / message / PDF / Word")
     file = st.file_uploader("", type=['pdf','docx','png','jpg','jpeg','txt'], label_visibility="collapsed")
-    raw_input = st.text_area("Input area", height=150, label_visibility="collapsed", placeholder="Paste your data here...")
+    
+    st.markdown("### Enter or paste input")
+    raw_input = st.text_area("", height=250, label_visibility="collapsed", placeholder="Paste your bulk data here...")
     
     c1, c2, c3 = st.columns([1, 1, 1.2])
     
     if c1.button("Analyze"):
-        source_text = raw_input # Priority to text area
-        if not source_text and file:
-            # File extraction logic (munaadi sonnathu pola)
-            source_text = "File content extraction here..." 
-            
-        if source_text:
-            with st.spinner("AI is finding fields..."):
-                # Default extraction fields
-                result = ai_process(source_text, "Name, Date, Amount, Address, Phone")
-                if "Error" in result:
-                    st.error(result["Error"])
-                else:
-                    st.session_state.extracted_data = result
-                    st.session_state.history.append({"Time": datetime.now().strftime("%H:%M"), **result})
-                    st.rerun() # Refresh panna thaan display aagum
+        if raw_input:
+            with st.spinner("Deep Scanning Patterns..."):
+                results = deep_analyze(raw_input)
+                st.session_state.extracted_results = results
+                if results:
+                    st.session_state.history.append({"Timestamp": datetime.now().strftime("%H:%M:%S"), **results})
         else:
-            st.warning("Data ethuvum illai!")
+            st.warning("Input box-la data paste pannunga!")
 
-# --- Display Results ---
+    if c2.button("Clear"):
+        st.session_state.extracted_results = {}
+        st.rerun()
+        
+    if c3.button("Export Excel"):
+        if st.session_state.history:
+            df = pd.DataFrame(st.session_state.history)
+            st.download_button("Download CSV", df.to_csv(index=False).encode('utf-8'), "data_export.csv", "text/csv")
+
+# Results Display
 st.markdown("---")
 st.markdown("### Extracted Data:")
-if st.session_state.extracted_data:
-    # Displaying as a neat table/list
-    for key, val in st.session_state.extracted_data.items():
-        st.write(f"**{key}:** {val}")
+if st.session_state.extracted_results:
+    col_a, col_b = st.columns(2)
+    for i, (k, v) in enumerate(st.session_state.extracted_results.items()):
+        target_col = col_a if i % 2 == 0 else col_b
+        target_col.markdown(f"""<div class="extracted-box"><b>{k}:</b><br>{v}</div>""", unsafe_allow_html=True)
 else:
-    st.info("Results will appear here.")
+    st.info("Results will appear here after analysis.")
 
-# Custom Fields & History (Bottom sections)
+# History Section
 st.markdown("---")
-st.subheader("🕒 Last 10 Analysis")
+st.markdown("### 🕒 Last 10 Analysis")
 if st.session_state.history:
-    st.dataframe(pd.DataFrame(st.session_state.history).tail(10))
-        
+    st.dataframe(pd.DataFrame(st.session_state.history).tail(10), use_container_width=True)
